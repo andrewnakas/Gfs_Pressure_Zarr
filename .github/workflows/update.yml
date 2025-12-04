@@ -1,0 +1,63 @@
+name: Update GFS Zarr
+
+on:
+  schedule:
+    - cron: '30 3,9,15,21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes0 libeccodes-dev git-lfs
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Prepare data worktree
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin data || true
+          if git ls-remote --exit-code origin data >/dev/null 2>&1; then
+            git worktree add -B data ../data-worktree origin/data
+          else
+            git worktree add -b data ../data-worktree
+          fi
+          cd ../data-worktree
+          git lfs install
+          if [ -f ../Gfs_Pressure_Zarr/.gitattributes ]; then
+            cp ../Gfs_Pressure_Zarr/.gitattributes .
+          fi
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+
+      - name: Generate Zarr archive
+        run: |
+          python scripts/update_gfs_zarr.py --output ../data-worktree/gfs_latest.zarr --zip
+          rm -rf ../data-worktree/gfs_latest.zarr
+          ls -lh ../data-worktree
+
+      - name: Commit and push latest data
+        run: |
+          cd ../data-worktree
+          git add .gitattributes gfs_latest.zarr.zip latest_metadata.json
+          git status --short
+          git commit -m "Update GFS pressure levels $(date -u +'%Y-%m-%d %H:%M UTC')" || echo "No changes to commit"
+          git push --force origin HEAD:data

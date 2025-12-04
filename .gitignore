@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dylib
+.env
+.venv
+.envrc
+.cache/
+*.log
+*.tmp
+*.grib2
+*.idx
+build/
+dist/
+.DS_Store

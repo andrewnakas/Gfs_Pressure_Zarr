@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Download the latest GFS pressure-level GRIB2 files and convert to Zarr.
+
+Designed for GitHub Actions but runnable locally. By default it:
+- picks the most recent GFS cycle that is likely published (UTC now minus 5h)
+- downloads specified forecast hours from the public NOAA GFS bucket
+- keeps only pressure-level fields
+- writes a consolidated, chunked Zarr store
+- optionally zips the Zarr directory for easier transport/storage
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable, List, Tuple
+
+import requests
+import xarray as xr
+import zarr
+
+
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+LOGGER = logging.getLogger("update_gfs_zarr")
+
+
+def parse_forecast_hours(text: str | None) -> List[int]:
+    if not text:
+        return []
+    hours: List[int] = []
+    for token in text.replace(",", " ").split():
+        if not token.strip():
+            continue
+        hours.append(int(token))
+    return sorted(set(hours))
+
+
+def cycle_candidates(now: datetime, max_back_cycles: int) -> Iterable[Tuple[datetime.date, int]]:
+    """Yield candidate (date, cycle_hour) pairs stepping back 6h at a time."""
+    for back in range(max_back_cycles + 1):
+        candidate_time = now - timedelta(hours=6 * back)
+        cycle_hour = (candidate_time.hour // 6) * 6
+        yield candidate_time.date(), cycle_hour
+
+
+def build_url(base_url: str, date, cycle_hour: int, forecast_hour: int, grid: str) -> str:
+    date_str = date.strftime("%Y%m%d")
+    path = f"gfs.{date_str}/{cycle_hour:02d}/atmos"
+    filename = f"gfs.t{cycle_hour:02d}z.pgrb2.{grid}.f{forecast_hour:03d}"
+    return f"{base_url.rstrip('/')}/{path}/{filename}"
+
+
+def download_file(url: str, dest: Path, retries: int = 3) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, retries + 1):
+        try:
+            with requests.get(url, stream=True, timeout=60) as resp:
+                if resp.status_code == 404:
+                    raise FileNotFoundError(url)
+                resp.raise_for_status()
+                with dest.open("wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            return
+        except (requests.HTTPError, requests.ConnectionError, requests.Timeout) as exc:
+            if attempt == retries:
+                raise
+            sleep_for = attempt * 5
+            LOGGER.warning("%s (attempt %s/%s), retrying in %ss", exc, attempt, retries, sleep_for)
+            import time
+
+            time.sleep(sleep_for)
+
+
+def load_pressure_dataset(grib_path: Path):
+    backend_kwargs = {
+        "filter_by_keys": {"typeOfLevel": "isobaricInhPa"},
+        "indexpath": "",  # avoid writing index sidecars
+    }
+    LOGGER.info("Opening %s", grib_path.name)
+    ds = xr.open_dataset(
+        grib_path,
+        engine="cfgrib",
+        backend_kwargs=backend_kwargs,
+    )
+    # Ensure pressure levels ascending and add valid_time for convenience
+    if "isobaricInhPa" in ds.coords:
+        ds = ds.sortby("isobaricInhPa")
+    if "time" in ds.coords and "step" in ds.coords:
+        ds = ds.assign_coords(valid_time=ds.time + ds.step)
+    # Light chunking to keep memory reasonable
+    ds = ds.chunk({"isobaricInhPa": 8, "latitude": 90, "longitude": 90})
+    return ds
+
+
+def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool) -> Path:
+    if output_path.exists():
+        shutil.rmtree(output_path)
+    compressor = zarr.Blosc(cname="zstd", clevel=4, shuffle=2)
+    encoding = {name: {"compressor": compressor} for name in ds.data_vars}
+    LOGGER.info("Writing Zarr → %s", output_path)
+    ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
+    if zip_output:
+        archive_path = output_path.with_suffix(output_path.suffix + ".zip")
+        if archive_path.exists():
+            archive_path.unlink()
+        LOGGER.info("Zipping Zarr → %s", archive_path.name)
+        shutil.make_archive(
+            base_name=str(output_path),
+            format="zip",
+            root_dir=output_path.parent,
+            base_dir=output_path.name,
+        )
+        return archive_path
+    return output_path
+
+
+def write_metadata(meta_path: Path, *, cycle_date, cycle_hour: int, forecast_hours: List[int], source_url: str):
+    meta = {
+        "cycle_date": cycle_date.strftime("%Y-%m-%d"),
+        "cycle_hour_utc": cycle_hour,
+        "forecast_hours": forecast_hours,
+        "source": source_url,
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    meta_path.write_text(json.dumps(meta, indent=2))
+    LOGGER.info("Wrote metadata → %s", meta_path)
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--forecast-hours",
+        dest="forecast_hours",
+        default=os.getenv("FORECAST_HOURS", "0"),
+        help="Space separated forecast hours",
+    )
+    parser.add_argument("--grid", default=os.getenv("GRID", "0p25"), help="Grid resolution suffix (0p25 or 0p50)")
+    parser.add_argument("--cycle-offset", dest="cycle_offset", type=int, default=int(os.getenv("CYCLE_OFFSET_HOURS", 3)), help="Hours to back off from now(UTC) when picking cycle")
+    parser.add_argument("--max-back-cycles", dest="max_back_cycles", type=int, default=3, help="How many 6h cycles to fall back if newest is missing")
+    parser.add_argument("--base-url", dest="base_url", default=os.getenv("BASE_URL", "https://noaa-gfs-bdp-pds.s3.amazonaws.com"))
+    parser.add_argument("--output", dest="output", default=os.getenv("OUTPUT_ZARR", "gfs_latest.zarr"))
+    parser.add_argument("--zip", dest="zip_output", action=argparse.BooleanOptionalAction, default=os.getenv("ZIP_OUTPUT", "1") == "1", help="Also emit a .zip of the Zarr store")
+    parser.add_argument("--tmp-dir", dest="tmp_dir", default=os.getenv("TMP_DIR", "/tmp/gfs"))
+    args = parser.parse_args(argv)
+
+    forecast_hours = parse_forecast_hours(args.forecast_hours)
+    if not forecast_hours:
+        raise SystemExit("No forecast hours provided")
+
+    now = datetime.now(timezone.utc) - timedelta(hours=args.cycle_offset)
+    candidates = list(cycle_candidates(now, args.max_back_cycles))
+
+    tmp_dir = Path(args.tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    for cycle_date, cycle_hour in candidates:
+        LOGGER.info("Trying cycle %s %02dZ", cycle_date.isoformat(), cycle_hour)
+        try:
+            datasets = []
+            downloaded = []
+            for fh in forecast_hours:
+                url = build_url(args.base_url, cycle_date, cycle_hour, fh, args.grid)
+                grib_path = tmp_dir / Path(url).name
+                download_file(url, grib_path)
+                downloaded.append(grib_path)
+                datasets.append(load_pressure_dataset(grib_path))
+
+            combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
+            output_path = Path(args.output)
+            archive_path = save_zarr(combined, output_path, zip_output=args.zip_output)
+
+            metadata_path = output_path.parent / "latest_metadata.json"
+            write_metadata(
+                metadata_path,
+                cycle_date=cycle_date,
+                cycle_hour=cycle_hour,
+                forecast_hours=forecast_hours,
+                source_url=args.base_url,
+            )
+
+            # Clean up GRIB files to keep workspace small
+            for fp in downloaded:
+                fp.unlink(missing_ok=True)
+
+            LOGGER.info("Done. Output at %s", archive_path)
+            return 0
+        except FileNotFoundError:
+            LOGGER.warning("Cycle %s %02dZ not available (404). Trying previous cycle...", cycle_date, cycle_hour)
+            continue
+        except Exception:
+            LOGGER.exception("Cycle %s %02dZ failed", cycle_date, cycle_hour)
+            continue
+
+    LOGGER.error("No available cycles in last %s attempts", len(candidates))
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
