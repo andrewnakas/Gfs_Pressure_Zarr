@@ -35,11 +35,11 @@ jobs:
       - name: Configure capture window
         run: |
           FH=$(python - <<'PY'
-            early = list(range(0,121,1))
-            late = list(range(123,385,3))
-            print(' '.join(str(x) for x in early+late))
-          PY
-          )
+early = list(range(0,121,1))
+late = list(range(123,385,3))
+print(' '.join(str(x) for x in early+late))
+PY
+)
           echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV
           echo "GRID=${GRID:-0p25}" >> $GITHUB_ENV
           echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-}" >> $GITHUB_ENV
