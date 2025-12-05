@@ -1,0 +1,9 @@
+{
+  "cycle_date": "2025-12-05",
+  "cycle_hour_utc": 0,
+  "forecast_hours": [
+    0
+  ],
+  "source": "https://noaa-gfs-bdp-pds.s3.amazonaws.com",
+  "generated_utc": "2025-12-05T05:57:28.240028+00:00"
+}
