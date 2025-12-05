@@ -23,6 +23,7 @@ from typing import Iterable, List, Sequence, Tuple
 import requests
 import xarray as xr
 from cfgrib.dataset import DatasetBuildError
+from cfgrib import index as cfindex
 from zarr.codecs import Blosc
 
 
@@ -42,7 +43,9 @@ def parse_forecast_hours(text: str | None) -> List[int]:
 
 
 def parse_shortnames(text: str | None) -> List[str]:
-    if not text:
+    if text is None:
+        return []
+    if text.strip() == "":
         return []
     return [tok.strip() for tok in text.replace(",", " ").split() if tok.strip()]
 
@@ -107,6 +110,16 @@ def load_pressure_dataset(grib_path: Path, shortnames: List[str], levels: Sequen
         "errors": "ignore",  # prefer partial success over failure
     }
 
+    # Auto-discover shortNames if none provided
+    if not shortnames:
+        try:
+            idx = cfindex.open_file(str(grib_path), filter_by_keys={"typeOfLevel": "isobaricInhPa"})
+            shortnames = sorted({sn for sn in idx.unique("shortName") if sn})
+            LOGGER.info("Discovered %d pressure-level shortNames", len(shortnames))
+        except Exception:
+            LOGGER.warning("Could not auto-discover shortNames; falling back to cfgrib full open")
+            shortnames = []
+
     LOGGER.info("Opening %s", grib_path.name)
     try:
         ds = xr.open_dataset(
@@ -118,17 +131,19 @@ def load_pressure_dataset(grib_path: Path, shortnames: List[str], levels: Sequen
         LOGGER.warning("cfgrib merge conflict; retrying per-shortName subset")
         datasets = []
         levels_union = None
+        target_levels = levels if levels else None
         for sn in shortnames:
             kw = dict(base_kwargs)
             kw["filter_by_keys"] = {**kw["filter_by_keys"], "shortName": sn}
             try:
                 part = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs=kw)
                 if "isobaricInhPa" in part.coords:
-                    levels_union = (
-                        part.isobaricInhPa.values
-                        if levels_union is None
-                        else sorted(set(levels_union) | set(part.isobaricInhPa.values))
-                    )
+                    if target_levels:
+                        part = part.sel(isobaricInhPa=[lev for lev in target_levels if lev in part.isobaricInhPa.values])
+                    if levels_union is None:
+                        levels_union = list(part.isobaricInhPa.values)
+                    else:
+                        levels_union = sorted(set(levels_union) | set(part.isobaricInhPa.values))
                 datasets.append(part)
             except DatasetBuildError:
                 LOGGER.warning("Skipping shortName=%s due to cfgrib error", sn)
@@ -220,14 +235,14 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument(
         "--params",
         dest="params",
-        default=os.getenv("PARAM_SHORTNAMES", "t u v gh r"),
-        help="Space separated shortName list to keep if cfgrib has conflicts",
+        default=os.getenv("PARAM_SHORTNAMES", ""),
+        help="Space separated shortName list to keep if cfgrib has conflicts; empty auto-discovers all pressure-level vars",
     )
     parser.add_argument(
         "--levels",
         dest="levels",
-        default=os.getenv("LEVELS_HPA", "1000 925 850 700 500 300 250 200 150 100 70 50"),
-        help="Space separated pressure levels (hPa) to retain; others dropped",
+        default=os.getenv("LEVELS_HPA", ""),
+        help="Space separated pressure levels (hPa) to retain; leave empty to keep all",
     )
     parser.add_argument(
         "--max-bytes",

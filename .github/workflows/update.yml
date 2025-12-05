@@ -41,9 +41,9 @@ print(' '.join(str(x) for x in early+late))
 PY
 )
           echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV
-          echo "GRID=${GRID:-0p50}" >> $GITHUB_ENV
-          echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-"t u v gh r"}" >> $GITHUB_ENV
-          echo "LEVELS_HPA=${LEVELS_HPA:-"1000 925 850 700 500 300 250 200 150 100 70 50"}" >> $GITHUB_ENV
+          echo "GRID=${GRID:-0p25}" >> $GITHUB_ENV
+          echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-""}" >> $GITHUB_ENV
+          echo "LEVELS_HPA=${LEVELS_HPA:-""}" >> $GITHUB_ENV
           echo "MAX_ZARR_BYTES=${MAX_ZARR_BYTES:-1900000000}" >> $GITHUB_ENV
           echo "DTYPE=${DTYPE:-float16}" >> $GITHUB_ENV
 
