@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,6 +31,14 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
+
+      - name: Configure capture window
+        run: |
+          echo "FORECAST_HOURS=${FORECAST_HOURS:-"0 12 24 36 48 60 72 84 96 108 120 132 144 156 168 180 192 204 216 228 240 252 264 276 288 300 312 324 336 348 360 372 384"}" >> $GITHUB_ENV
+          echo "GRID=${GRID:-0p50}" >> $GITHUB_ENV
+          echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-"t u v gh r"}" >> $GITHUB_ENV
+          echo "LEVELS_HPA=${LEVELS_HPA:-"1000 925 850 700 500 300 250 200 150 100 70 50"}" >> $GITHUB_ENV
+          echo "MAX_ZARR_BYTES=${MAX_ZARR_BYTES:-1900000000}" >> $GITHUB_ENV
 
       - name: Prepare data worktree
         run: |

@@ -25,17 +25,19 @@ python scripts/update_gfs_zarr.py --output ./gfs_latest.zarr --zip
 
 ## Environment variables
 You can override defaults when running locally or in CI:
-- `FORECAST_HOURS`: space separated forecast hours (default: `"0"` to keep size manageable).
-- `GRID`: grid resolution suffix (`0p25` or `0p50`, default `0p25`).
+- `FORECAST_HOURS`: space separated forecast hours (default: 12-hourly out to 384h: `"0 12 24 ... 384"`).
+- `GRID`: grid resolution suffix (`0p25` or `0p50`, default `0p50` to stay under GitHub limits).
 - `CYCLE_OFFSET_HOURS`: hours to back off from current UTC when choosing the latest cycle (default `3`).
-- `PARAM_SHORTNAMES`: space separated GRIB `shortName` list used as a fallback when cfgrib encounters mixed vertical levels. Default keeps core fields: `"t u v r q gh w"`.
+- `PARAM_SHORTNAMES`: space separated GRIB `shortName` list used as a fallback when cfgrib encounters mixed vertical levels. Default keeps core fields: `"t u v gh r"`.
+- `LEVELS_HPA`: pressure levels to keep (default: `1000 925 850 700 500 300 250 200 150 100 70 50`).
+- `MAX_ZARR_BYTES`: safety cutoff in bytes for the zipped store (default ~1.9 GB); run aborts if exceeded to avoid GitHub/LFS push failures.
 - `BASE_URL`: source bucket (default `https://noaa-gfs-bdp-pds.s3.amazonaws.com`).
 - `OUTPUT_ZARR`: output directory path (default `gfs_latest.zarr`).
 - `ZIP_OUTPUT`: `1` to also emit `OUTPUT_ZARR.zip` (workflow uses this).
 
 ## Caveats
 - Full pressure-level GFS files are large; even zipped they may exceed GitHub's normal file limits, so the workflow uses Git LFS on the `data` branch. Ensure LFS is enabled on your clone when pulling data.
-- Defaults only include the analysis hour (`FORECAST_HOURS="0"`) to keep the archive well under common LFS limits. Expanding the hour list or switching to the 0.25° grid will grow the file size quickly and may exceed GitHub's per-object cap (~2 GB).
+- Defaults target a ~1 GB artifact: 12-hourly steps to 384h, 0.50° grid, a subset of pressure levels, and core variables only. Tighten variables/levels if you expand temporal resolution (e.g., 3‑hourly) or switch back to 0.25° to avoid exceeding GitHub limits (~2 GB per LFS object and repository quota).
 - The script falls back to the previous cycle if the newest is unavailable, up to three cycles back.
 - Only the latest dataset is retained; old data is removed by rewriting the `data` branch history each run.
 - Some GRIB variables only exist on a reduced pressure level set; cfgrib can choke on those. The script retries per-variable and keeps only the `PARAM_SHORTNAMES` list when needed to avoid failures.

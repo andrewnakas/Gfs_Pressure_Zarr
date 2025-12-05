@@ -18,7 +18,7 @@ import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 import requests
 import xarray as xr
@@ -45,6 +45,12 @@ def parse_shortnames(text: str | None) -> List[str]:
     if not text:
         return []
     return [tok.strip() for tok in text.replace(",", " ").split() if tok.strip()]
+
+
+def parse_levels(text: str | None) -> List[int]:
+    if not text:
+        return []
+    return [int(tok) for tok in text.replace(",", " ").split() if tok.strip()]
 
 
 def cycle_candidates(now: datetime, max_back_cycles: int) -> Iterable[Tuple[datetime.date, int]]:
@@ -85,7 +91,7 @@ def download_file(url: str, dest: Path, retries: int = 3) -> None:
             time.sleep(sleep_for)
 
 
-def load_pressure_dataset(grib_path: Path, shortnames: List[str]) -> xr.Dataset:
+def load_pressure_dataset(grib_path: Path, shortnames: List[str], levels: Sequence[int]) -> xr.Dataset:
     """Open a GRIB, falling back to per-variable loads when cfgrib hits coord conflicts."""
 
     base_kwargs = {
@@ -134,6 +140,10 @@ def load_pressure_dataset(grib_path: Path, shortnames: List[str]) -> xr.Dataset:
 
     # Ensure pressure levels ascending and add valid_time for convenience
     if "isobaricInhPa" in ds.coords:
+        if levels:
+            keep = [lev for lev in levels if lev in ds.isobaricInhPa.values]
+            if keep:
+                ds = ds.sel(isobaricInhPa=keep)
         ds = ds.sortby("isobaricInhPa")
     if "time" in ds.coords and "step" in ds.coords:
         ds = ds.assign_coords(valid_time=ds.time + ds.step)
@@ -142,7 +152,7 @@ def load_pressure_dataset(grib_path: Path, shortnames: List[str]) -> xr.Dataset:
     return ds
 
 
-def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool) -> Path:
+def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool, max_bytes: int | None = None) -> Path:
     if output_path.exists():
         shutil.rmtree(output_path)
     compressor = Blosc(cname="zstd", clevel=4, shuffle=2)
@@ -160,8 +170,17 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool) -> Path:
             root_dir=output_path.parent,
             base_dir=output_path.name,
         )
+        if max_bytes and archive_path.stat().st_size > max_bytes:
+            raise ValueError(
+                f"Zarr archive {archive_path.stat().st_size/1e6:.1f} MB exceeds max_bytes={max_bytes/1e6:.1f} MB"
+            )
         return archive_path
-    return output_path
+    else:
+        if max_bytes and output_path.stat().st_size > max_bytes:
+            raise ValueError(
+                f"Zarr store {output_path.stat().st_size/1e6:.1f} MB exceeds max_bytes={max_bytes/1e6:.1f} MB"
+            )
+        return output_path
 
 
 def write_metadata(meta_path: Path, *, cycle_date, cycle_hour: int, forecast_hours: List[int], source_url: str):
@@ -181,7 +200,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument(
         "--forecast-hours",
         dest="forecast_hours",
-        default=os.getenv("FORECAST_HOURS", "0"),
+        default=os.getenv("FORECAST_HOURS", " ".join(str(h) for h in range(0, 385, 12))),
         help="Space separated forecast hours",
     )
     parser.add_argument("--grid", default=os.getenv("GRID", "0p25"), help="Grid resolution suffix (0p25 or 0p50)")
@@ -194,8 +213,21 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument(
         "--params",
         dest="params",
-        default=os.getenv("PARAM_SHORTNAMES", "t u v r q gh w"),
+        default=os.getenv("PARAM_SHORTNAMES", "t u v gh r"),
         help="Space separated shortName list to keep if cfgrib has conflicts",
+    )
+    parser.add_argument(
+        "--levels",
+        dest="levels",
+        default=os.getenv("LEVELS_HPA", "1000 925 850 700 500 300 250 200 150 100 70 50"),
+        help="Space separated pressure levels (hPa) to retain; others dropped",
+    )
+    parser.add_argument(
+        "--max-bytes",
+        dest="max_bytes",
+        type=int,
+        default=int(os.getenv("MAX_ZARR_BYTES", 1_900_000_000)),
+        help="Abort if zipped store exceeds this many bytes (prevents GitHub/LFS failures)",
     )
     args = parser.parse_args(argv)
 
@@ -203,6 +235,7 @@ def main(argv: List[str] | None = None) -> int:
     if not forecast_hours:
         raise SystemExit("No forecast hours provided")
     shortnames = parse_shortnames(args.params)
+    levels = parse_levels(args.levels)
 
     now = datetime.now(timezone.utc) - timedelta(hours=args.cycle_offset)
     candidates = list(cycle_candidates(now, args.max_back_cycles))
@@ -220,11 +253,13 @@ def main(argv: List[str] | None = None) -> int:
                 grib_path = tmp_dir / Path(url).name
                 download_file(url, grib_path)
                 downloaded.append(grib_path)
-                datasets.append(load_pressure_dataset(grib_path, shortnames))
+                datasets.append(load_pressure_dataset(grib_path, shortnames, levels))
 
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
             output_path = Path(args.output)
-            archive_path = save_zarr(combined, output_path, zip_output=args.zip_output)
+            archive_path = save_zarr(
+                combined, output_path, zip_output=args.zip_output, max_bytes=args.max_bytes
+            )
 
             metadata_path = output_path.parent / "latest_metadata.json"
             write_metadata(
