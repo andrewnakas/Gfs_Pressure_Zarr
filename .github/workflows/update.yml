@@ -34,11 +34,18 @@ jobs:
 
       - name: Configure capture window
         run: |
-          echo "FORECAST_HOURS=${FORECAST_HOURS:-"0 12 24 36 48 60 72 84 96 108 120 132 144 156 168 180 192 204 216 228 240 252 264 276 288 300 312 324 336 348 360 372 384"}" >> $GITHUB_ENV
+          FH=$(python - <<'PY'
+early = list(range(0,121,1))
+late = list(range(123,385,3))
+print(' '.join(str(x) for x in early+late))
+PY
+)
+          echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV
           echo "GRID=${GRID:-0p50}" >> $GITHUB_ENV
           echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-"t u v gh r"}" >> $GITHUB_ENV
           echo "LEVELS_HPA=${LEVELS_HPA:-"1000 925 850 700 500 300 250 200 150 100 70 50"}" >> $GITHUB_ENV
           echo "MAX_ZARR_BYTES=${MAX_ZARR_BYTES:-1900000000}" >> $GITHUB_ENV
+          echo "DTYPE=${DTYPE:-float16}" >> $GITHUB_ENV
 
       - name: Prepare data worktree
         run: |

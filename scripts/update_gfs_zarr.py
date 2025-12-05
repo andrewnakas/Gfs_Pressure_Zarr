@@ -53,6 +53,13 @@ def parse_levels(text: str | None) -> List[int]:
     return [int(tok) for tok in text.replace(",", " ").split() if tok.strip()]
 
 
+def default_forecast_string() -> str:
+    """1-hourly to 120h, then 3-hourly to 384h."""
+    early = list(range(0, 121, 1))
+    late = list(range(123, 385, 3))
+    return " ".join(str(h) for h in early + late)
+
+
 def cycle_candidates(now: datetime, max_back_cycles: int) -> Iterable[Tuple[datetime.date, int]]:
     """Yield candidate (date, cycle_hour) pairs stepping back 6h at a time."""
     for back in range(max_back_cycles + 1):
@@ -156,7 +163,7 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool, max_bytes: in
     if output_path.exists():
         shutil.rmtree(output_path)
     compressor = Blosc(cname="zstd", clevel=4, shuffle=2)
-    encoding = {name: {"compressors": compressor} for name in ds.data_vars}
+    encoding = {name: {"compressors": compressor, "dtype": ds[name].dtype} for name in ds.data_vars}
     LOGGER.info("Writing Zarr → %s", output_path)
     ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
     if zip_output:
@@ -200,7 +207,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument(
         "--forecast-hours",
         dest="forecast_hours",
-        default=os.getenv("FORECAST_HOURS", " ".join(str(h) for h in range(0, 385, 12))),
+        default=os.getenv("FORECAST_HOURS", default_forecast_string()),
         help="Space separated forecast hours",
     )
     parser.add_argument("--grid", default=os.getenv("GRID", "0p25"), help="Grid resolution suffix (0p25 or 0p50)")
@@ -229,6 +236,12 @@ def main(argv: List[str] | None = None) -> int:
         default=int(os.getenv("MAX_ZARR_BYTES", 1_900_000_000)),
         help="Abort if zipped store exceeds this many bytes (prevents GitHub/LFS failures)",
     )
+    parser.add_argument(
+        "--dtype",
+        dest="dtype",
+        default=os.getenv("DTYPE", "float16"),
+        help="Output dtype for data variables (e.g., float32, float16)",
+    )
     args = parser.parse_args(argv)
 
     forecast_hours = parse_forecast_hours(args.forecast_hours)
@@ -256,6 +269,8 @@ def main(argv: List[str] | None = None) -> int:
                 datasets.append(load_pressure_dataset(grib_path, shortnames, levels))
 
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
+            if args.dtype:
+                combined = combined.astype(args.dtype)
             output_path = Path(args.output)
             archive_path = save_zarr(
                 combined, output_path, zip_output=args.zip_output, max_bytes=args.max_bytes

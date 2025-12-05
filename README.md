@@ -6,7 +6,8 @@ This repository automates fetching the latest GFS pressure‑level GRIB2 data, c
 - GitHub Actions runs at 03:30, 09:30, 15:30, and 21:30 UTC each day (starting 2025‑12‑03). These times trail the nominal GFS cycle availability by ~3–4 hours to reduce 404s while still staying current.
 - The workflow downloads the most recent available cycle from the public NOAA GFS bucket (`noaa-gfs-bdp-pds`), limited to pressure‑level fields.
 - GRIB2 files are converted with `xarray+cfgrib` into a single consolidated Zarr store, then zipped (`gfs_latest.zarr.zip`).
-- The zipped Zarr and a small metadata file are force‑pushed to the `data` branch so only the latest dataset exists; history is rewritten each run to avoid repo bloat.
+- The zipped Zarr and a small metadata file are force-pushed to the `data` branch so only the latest dataset exists; history is rewritten each run to avoid repo bloat.
+- Forecast hours follow the common GFS cadence: 1-hourly to 120h, then 3-hourly to 384h (16 days).
 
 ## Quick start
 - Grab the latest data directly from the `data` branch:
@@ -25,11 +26,12 @@ python scripts/update_gfs_zarr.py --output ./gfs_latest.zarr --zip
 
 ## Environment variables
 You can override defaults when running locally or in CI:
-- `FORECAST_HOURS`: space separated forecast hours (default: 12-hourly out to 384h: `"0 12 24 ... 384"`).
+- `FORECAST_HOURS`: space separated forecast hours (default: 1-hourly 0–120h plus 3-hourly 123–384h).
 - `GRID`: grid resolution suffix (`0p25` or `0p50`, default `0p50` to stay under GitHub limits).
 - `CYCLE_OFFSET_HOURS`: hours to back off from current UTC when choosing the latest cycle (default `3`).
 - `PARAM_SHORTNAMES`: space separated GRIB `shortName` list used as a fallback when cfgrib encounters mixed vertical levels. Default keeps core fields: `"t u v gh r"`.
 - `LEVELS_HPA`: pressure levels to keep (default: `1000 925 850 700 500 300 250 200 150 100 70 50`).
+- `DTYPE`: output dtype for data variables (default `float16` to reduce size).
 - `MAX_ZARR_BYTES`: safety cutoff in bytes for the zipped store (default ~1.9 GB); run aborts if exceeded to avoid GitHub/LFS push failures.
 - `BASE_URL`: source bucket (default `https://noaa-gfs-bdp-pds.s3.amazonaws.com`).
 - `OUTPUT_ZARR`: output directory path (default `gfs_latest.zarr`).
@@ -37,7 +39,7 @@ You can override defaults when running locally or in CI:
 
 ## Caveats
 - Full pressure-level GFS files are large; even zipped they may exceed GitHub's normal file limits, so the workflow uses Git LFS on the `data` branch. Ensure LFS is enabled on your clone when pulling data.
-- Defaults target a ~1 GB artifact: 12-hourly steps to 384h, 0.50° grid, a subset of pressure levels, and core variables only. Tighten variables/levels if you expand temporal resolution (e.g., 3‑hourly) or switch back to 0.25° to avoid exceeding GitHub limits (~2 GB per LFS object and repository quota).
+- Defaults target a ~1–2 GB artifact: 1-hourly to 120h then 3-hourly to 384h, 0.50° grid, float16, a subset of pressure levels, and core variables only. Tighten variables/levels or switch back to 12-hourly if you approach GitHub limits (~2 GB per LFS object and repository quota).
 - The script falls back to the previous cycle if the newest is unavailable, up to three cycles back.
 - Only the latest dataset is retained; old data is removed by rewriting the `data` branch history each run.
 - Some GRIB variables only exist on a reduced pressure level set; cfgrib can choke on those. The script retries per-variable and keeps only the `PARAM_SHORTNAMES` list when needed to avoid failures.
