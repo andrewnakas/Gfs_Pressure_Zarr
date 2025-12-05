@@ -22,8 +22,8 @@ from typing import Iterable, List, Tuple
 
 import requests
 import xarray as xr
-from numcodecs import Blosc
 from cfgrib.dataset import DatasetBuildError
+from zarr.codecs import Blosc
 
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -146,7 +146,7 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool) -> Path:
     if output_path.exists():
         shutil.rmtree(output_path)
     compressor = Blosc(cname="zstd", clevel=4, shuffle=2)
-    encoding = {name: {"compressor": compressor} for name in ds.data_vars}
+    encoding = {name: {"compressors": compressor} for name in ds.data_vars}
     LOGGER.info("Writing Zarr → %s", output_path)
     ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
     if zip_output:
