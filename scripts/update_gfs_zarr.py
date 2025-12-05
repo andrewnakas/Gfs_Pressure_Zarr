@@ -22,7 +22,8 @@ from typing import Iterable, List, Tuple
 
 import requests
 import xarray as xr
-import zarr
+from numcodecs import Blosc
+from cfgrib.dataset import DatasetBuildError
 
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -38,6 +39,12 @@ def parse_forecast_hours(text: str | None) -> List[int]:
             continue
         hours.append(int(token))
     return sorted(set(hours))
+
+
+def parse_shortnames(text: str | None) -> List[str]:
+    if not text:
+        return []
+    return [tok.strip() for tok in text.replace(",", " ").split() if tok.strip()]
 
 
 def cycle_candidates(now: datetime, max_back_cycles: int) -> Iterable[Tuple[datetime.date, int]]:
@@ -78,17 +85,53 @@ def download_file(url: str, dest: Path, retries: int = 3) -> None:
             time.sleep(sleep_for)
 
 
-def load_pressure_dataset(grib_path: Path):
-    backend_kwargs = {
+def load_pressure_dataset(grib_path: Path, shortnames: List[str]) -> xr.Dataset:
+    """Open a GRIB, falling back to per-variable loads when cfgrib hits coord conflicts."""
+
+    base_kwargs = {
         "filter_by_keys": {"typeOfLevel": "isobaricInhPa"},
         "indexpath": "",  # avoid writing index sidecars
+        "errors": "ignore",  # prefer partial success over failure
     }
+
     LOGGER.info("Opening %s", grib_path.name)
-    ds = xr.open_dataset(
-        grib_path,
-        engine="cfgrib",
-        backend_kwargs=backend_kwargs,
-    )
+    try:
+        ds = xr.open_dataset(
+            grib_path,
+            engine="cfgrib",
+            backend_kwargs=base_kwargs,
+        )
+    except DatasetBuildError:
+        LOGGER.warning("cfgrib merge conflict; retrying per-shortName subset")
+        datasets = []
+        levels_union = None
+        for sn in shortnames:
+            kw = dict(base_kwargs)
+            kw["filter_by_keys"] = {**kw["filter_by_keys"], "shortName": sn}
+            try:
+                part = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs=kw)
+                if "isobaricInhPa" in part.coords:
+                    levels_union = (
+                        part.isobaricInhPa.values
+                        if levels_union is None
+                        else sorted(set(levels_union) | set(part.isobaricInhPa.values))
+                    )
+                datasets.append(part)
+            except DatasetBuildError:
+                LOGGER.warning("Skipping shortName=%s due to cfgrib error", sn)
+                continue
+
+        if not datasets:
+            raise
+
+        # Align to common pressure axis so merge succeeds
+        if levels_union is not None:
+            for i, part in enumerate(datasets):
+                if "isobaricInhPa" in part.coords:
+                    datasets[i] = part.reindex(isobaricInhPa=levels_union)
+
+        ds = xr.merge(datasets, compat="override", combine_attrs="drop_conflicts")
+
     # Ensure pressure levels ascending and add valid_time for convenience
     if "isobaricInhPa" in ds.coords:
         ds = ds.sortby("isobaricInhPa")
@@ -102,7 +145,7 @@ def load_pressure_dataset(grib_path: Path):
 def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool) -> Path:
     if output_path.exists():
         shutil.rmtree(output_path)
-    compressor = zarr.Blosc(cname="zstd", clevel=4, shuffle=2)
+    compressor = Blosc(cname="zstd", clevel=4, shuffle=2)
     encoding = {name: {"compressor": compressor} for name in ds.data_vars}
     LOGGER.info("Writing Zarr → %s", output_path)
     ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
@@ -148,11 +191,18 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--output", dest="output", default=os.getenv("OUTPUT_ZARR", "gfs_latest.zarr"))
     parser.add_argument("--zip", dest="zip_output", action=argparse.BooleanOptionalAction, default=os.getenv("ZIP_OUTPUT", "1") == "1", help="Also emit a .zip of the Zarr store")
     parser.add_argument("--tmp-dir", dest="tmp_dir", default=os.getenv("TMP_DIR", "/tmp/gfs"))
+    parser.add_argument(
+        "--params",
+        dest="params",
+        default=os.getenv("PARAM_SHORTNAMES", "t u v r q gh w"),
+        help="Space separated shortName list to keep if cfgrib has conflicts",
+    )
     args = parser.parse_args(argv)
 
     forecast_hours = parse_forecast_hours(args.forecast_hours)
     if not forecast_hours:
         raise SystemExit("No forecast hours provided")
+    shortnames = parse_shortnames(args.params)
 
     now = datetime.now(timezone.utc) - timedelta(hours=args.cycle_offset)
     candidates = list(cycle_candidates(now, args.max_back_cycles))
@@ -170,7 +220,7 @@ def main(argv: List[str] | None = None) -> int:
                 grib_path = tmp_dir / Path(url).name
                 download_file(url, grib_path)
                 downloaded.append(grib_path)
-                datasets.append(load_pressure_dataset(grib_path))
+                datasets.append(load_pressure_dataset(grib_path, shortnames))
 
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
             output_path = Path(args.output)

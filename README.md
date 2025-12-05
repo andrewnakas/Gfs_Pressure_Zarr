@@ -28,6 +28,7 @@ You can override defaults when running locally or in CI:
 - `FORECAST_HOURS`: space separated forecast hours (default: `"0"` to keep size manageable).
 - `GRID`: grid resolution suffix (`0p25` or `0p50`, default `0p25`).
 - `CYCLE_OFFSET_HOURS`: hours to back off from current UTC when choosing the latest cycle (default `3`).
+- `PARAM_SHORTNAMES`: space separated GRIB `shortName` list used as a fallback when cfgrib encounters mixed vertical levels. Default keeps core fields: `"t u v r q gh w"`.
 - `BASE_URL`: source bucket (default `https://noaa-gfs-bdp-pds.s3.amazonaws.com`).
 - `OUTPUT_ZARR`: output directory path (default `gfs_latest.zarr`).
 - `ZIP_OUTPUT`: `1` to also emit `OUTPUT_ZARR.zip` (workflow uses this).
@@ -37,3 +38,4 @@ You can override defaults when running locally or in CI:
 - Defaults only include the analysis hour (`FORECAST_HOURS="0"`) to keep the archive well under common LFS limits. Expanding the hour list or switching to the 0.25° grid will grow the file size quickly and may exceed GitHub's per-object cap (~2 GB).
 - The script falls back to the previous cycle if the newest is unavailable, up to three cycles back.
 - Only the latest dataset is retained; old data is removed by rewriting the `data` branch history each run.
+- Some GRIB variables only exist on a reduced pressure level set; cfgrib can choke on those. The script retries per-variable and keeps only the `PARAM_SHORTNAMES` list when needed to avoid failures.
