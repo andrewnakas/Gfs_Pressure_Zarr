@@ -11,12 +11,13 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      GIT_LFS_SKIP_SMUDGE: 1
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,7 +59,7 @@ jobs:
             git worktree add -b data ../data-worktree
           fi
           cd ../data-worktree
-          git lfs install
+          git lfs install --skip-smudge
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           # Re-add LFS tracking for large artifacts
           if [ -f ../Gfs_Pressure_Zarr/.gitattributes ]; then
