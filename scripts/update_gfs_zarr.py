@@ -186,20 +186,39 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool, max_bytes: in
     encoding = {name: {"compressors": compressor, "dtype": ds[name].dtype} for name in ds.data_vars}
     LOGGER.info("Writing Zarr → %s", output_path)
     ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
+
+    # Check zarr size before zipping
+    zarr_size = sum(f.stat().st_size for f in output_path.rglob('*') if f.is_file())
+    LOGGER.info("Zarr store size: %.1f MB", zarr_size / 1e6)
+
     if zip_output:
         archive_path = output_path.with_suffix(output_path.suffix + ".zip")
         if archive_path.exists():
             archive_path.unlink()
         LOGGER.info("Zipping Zarr → %s", archive_path.name)
+
+        # Check available disk space
+        import subprocess
+        try:
+            result = subprocess.run(['df', '-BM', str(output_path.parent)],
+                                  capture_output=True, text=True, timeout=5)
+            LOGGER.info("Disk space before zip:\n%s", result.stdout)
+        except Exception:
+            pass
+
         shutil.make_archive(
             base_name=str(output_path),
             format="zip",
             root_dir=output_path.parent,
             base_dir=output_path.name,
         )
-        if max_bytes and archive_path.stat().st_size > max_bytes:
+
+        archive_size = archive_path.stat().st_size
+        LOGGER.info("Archive size: %.1f MB", archive_size / 1e6)
+
+        if max_bytes and archive_size > max_bytes:
             raise ValueError(
-                f"Zarr archive {archive_path.stat().st_size/1e6:.1f} MB exceeds max_bytes={max_bytes/1e6:.1f} MB"
+                f"Zarr archive {archive_size/1e6:.1f} MB exceeds max_bytes={max_bytes/1e6:.1f} MB"
             )
         return archive_path
     else:
@@ -314,8 +333,13 @@ def main(argv: List[str] | None = None) -> int:
         except FileNotFoundError:
             LOGGER.warning("Cycle %s %02dZ not available (404). Trying previous cycle...", cycle_date, cycle_hour)
             continue
-        except Exception:
-            LOGGER.exception("Cycle %s %02dZ failed", cycle_date, cycle_hour)
+        except Exception as e:
+            # If we successfully loaded all files but failed during processing, don't retry
+            if datasets:
+                LOGGER.exception("Cycle %s %02dZ failed during processing after loading %d datasets",
+                                cycle_date, cycle_hour, len(datasets))
+                raise
+            LOGGER.exception("Cycle %s %02dZ failed during download", cycle_date, cycle_hour)
             continue
 
     LOGGER.error("No available cycles in last %s attempts", len(candidates))
