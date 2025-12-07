@@ -23,7 +23,6 @@ from typing import Iterable, List, Sequence, Tuple
 import requests
 import xarray as xr
 from cfgrib.dataset import DatasetBuildError
-from cfgrib import index as cfindex
 from zarr.codecs import Blosc
 
 
@@ -113,8 +112,14 @@ def load_pressure_dataset(grib_path: Path, shortnames: List[str], levels: Sequen
     # Auto-discover shortNames if none provided
     if not shortnames:
         try:
-            idx = cfindex.open_file(str(grib_path), filter_by_keys={"typeOfLevel": "isobaricInhPa"})
-            shortnames = sorted({sn for sn in idx.unique("shortName") if sn})
+            # Open dataset to discover available variables (shortNames are variable names)
+            temp_ds = xr.open_dataset(
+                grib_path,
+                engine="cfgrib",
+                backend_kwargs=base_kwargs,
+            )
+            shortnames = sorted(list(temp_ds.data_vars.keys()))
+            temp_ds.close()
             LOGGER.info("Discovered %d pressure-level shortNames", len(shortnames))
         except Exception:
             LOGGER.warning("Could not auto-discover shortNames; falling back to cfgrib full open")
