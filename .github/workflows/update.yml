@@ -18,12 +18,20 @@ jobs:
         run: |
           echo "Before cleanup:"
           df -h
+          # Remove large unnecessary packages (~40GB freed)
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           sudo docker image prune --all --force
           sudo apt-get clean
+          # Remove apt caches
+          sudo apt-get autoremove -y
+          sudo rm -rf /var/lib/apt/lists/*
           echo "After cleanup:"
           df -h
 
@@ -49,9 +57,10 @@ jobs:
       - name: Configure capture window
         run: |
           FH=$(python - <<'PY'
-          # Match dynamical GFS: 16 days = 384 hours
-          # 3-hourly to reduce file count and disk usage
-          print(' '.join(str(x) for x in range(0, 385, 3)))
+          # 209 forecast hours: 1-hourly to 120h, then 3-hourly to 384h
+          early = list(range(0, 121, 1))
+          late = list(range(123, 385, 3))
+          print(' '.join(str(x) for x in early + late))
           PY
           )
           echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV
@@ -65,15 +74,24 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin data || true
+
+          # Create fresh data branch - don't fetch old data to save disk space
           if git ls-remote --exit-code origin data >/dev/null 2>&1; then
-            git worktree add -B data ../data-worktree origin/data
+            # Data branch exists - create orphan branch to discard history
+            git worktree add --detach ../data-worktree
+            cd ../data-worktree
+            git checkout --orphan data
+            git rm -rf . 2>/dev/null || true
           else
+            # First time - create new branch
             git worktree add -b data ../data-worktree
+            cd ../data-worktree
           fi
-          cd ../data-worktree
-          git lfs install --skip-smudge
+
+          # Clean everything except .git
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+
+          git lfs install --skip-smudge
           # Re-add LFS tracking for large artifacts
           if [ -f ../Gfs_Pressure_Zarr/.gitattributes ]; then
             cp ../Gfs_Pressure_Zarr/.gitattributes .
@@ -81,14 +99,24 @@ jobs:
           git lfs track "*.zarr.zip"
           git add .gitattributes
 
+          echo "Data worktree ready:"
+          df -h
+
       - name: Generate Zarr archive
         run: |
+          echo "Disk before processing:"
+          df -h
           python scripts/update_gfs_zarr.py --output ../data-worktree/gfs_latest.zarr --zip
           # Clean up GRIB downloads and unzipped zarr immediately
           rm -rf /tmp/gfs
           rm -rf ../data-worktree/gfs_latest.zarr
-          echo "Disk usage after Zarr generation:"
+          # Additional cleanup of Python caches
+          find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+          pip cache purge || true
+          echo "Disk after Zarr generation:"
           df -h
+          echo "Files in data worktree:"
           ls -lh ../data-worktree
 
       - name: Commit and push latest data
