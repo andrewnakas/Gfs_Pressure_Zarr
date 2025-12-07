@@ -280,13 +280,14 @@ def main(argv: List[str] | None = None) -> int:
         LOGGER.info("Trying cycle %s %02dZ", cycle_date.isoformat(), cycle_hour)
         try:
             datasets = []
-            downloaded = []
             for fh in forecast_hours:
                 url = build_url(args.base_url, cycle_date, cycle_hour, fh, args.grid)
                 grib_path = tmp_dir / Path(url).name
                 download_file(url, grib_path)
-                downloaded.append(grib_path)
                 datasets.append(load_pressure_dataset(grib_path, shortnames, levels))
+                # Delete GRIB immediately after loading to save disk space
+                grib_path.unlink(missing_ok=True)
+                LOGGER.info("Processed and deleted %s", grib_path.name)
 
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
             if args.dtype:
@@ -305,9 +306,8 @@ def main(argv: List[str] | None = None) -> int:
                 source_url=args.base_url,
             )
 
-            # Clean up GRIB files to keep workspace small
-            for fp in downloaded:
-                fp.unlink(missing_ok=True)
+            # Clean up tmp directory
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
             LOGGER.info("Done. Output at %s", archive_path)
             return 0

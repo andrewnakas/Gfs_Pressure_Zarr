@@ -14,10 +14,23 @@ jobs:
     env:
       GIT_LFS_SKIP_SMUDGE: 1
     steps:
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          echo "After cleanup:"
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,13 +49,13 @@ jobs:
       - name: Configure capture window
         run: |
           FH=$(python - <<'PY'
-          early = list(range(0,121,1))
-          late = list(range(123,385,3))
-          print(' '.join(str(x) for x in early+late))
+          # Match dynamical GFS: 16 days = 384 hours
+          # 3-hourly to reduce file count and disk usage
+          print(' '.join(str(x) for x in range(0, 385, 3)))
           PY
           )
           echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV
-          echo "GRID=${GRID:-0p25}" >> $GITHUB_ENV
+          echo "GRID=${GRID:-0p50}" >> $GITHUB_ENV
           echo "PARAM_SHORTNAMES=${PARAM_SHORTNAMES:-}" >> $GITHUB_ENV
           echo "LEVELS_HPA=${LEVELS_HPA:-}" >> $GITHUB_ENV
           echo "MAX_ZARR_BYTES=${MAX_ZARR_BYTES:-1900000000}" >> $GITHUB_ENV
@@ -71,7 +84,11 @@ jobs:
       - name: Generate Zarr archive
         run: |
           python scripts/update_gfs_zarr.py --output ../data-worktree/gfs_latest.zarr --zip
+          # Clean up GRIB downloads and unzipped zarr immediately
+          rm -rf /tmp/gfs
           rm -rf ../data-worktree/gfs_latest.zarr
+          echo "Disk usage after Zarr generation:"
+          df -h
           ls -lh ../data-worktree
 
       - name: Commit and push latest data
