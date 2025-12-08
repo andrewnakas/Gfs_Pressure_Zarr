@@ -313,7 +313,7 @@ def main(argv: List[str] | None = None) -> int:
                 LOGGER.info("Processed and deleted %s", grib_path.name)
 
             LOGGER.info("Concatenating %d datasets along step dimension", len(datasets))
-            combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts", coords="minimal")
+            combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts", compat="override")
             if args.dtype:
                 LOGGER.info("Converting to dtype=%s", args.dtype)
                 combined = combined.astype(args.dtype)
