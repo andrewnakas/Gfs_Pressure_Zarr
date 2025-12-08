@@ -11,6 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     env:
       GIT_LFS_SKIP_SMUDGE: 1
     steps:
@@ -104,8 +105,9 @@ jobs:
 
       - name: Generate Zarr archive
         run: |
-          echo "Disk before processing:"
+          echo "=== System resources before processing ==="
           df -h
+          free -h
           python scripts/update_gfs_zarr.py --output ../data-worktree/gfs_latest.zarr --zip
           # Clean up GRIB downloads and unzipped zarr immediately
           rm -rf /tmp/gfs
@@ -114,9 +116,10 @@ jobs:
           find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
           pip cache purge || true
-          echo "Disk after Zarr generation:"
+          echo "=== System resources after processing ==="
           df -h
-          echo "Files in data worktree:"
+          free -h
+          echo "=== Files in data worktree ==="
           ls -lh ../data-worktree
 
       - name: Commit and push latest data

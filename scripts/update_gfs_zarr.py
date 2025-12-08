@@ -184,8 +184,12 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool, max_bytes: in
         shutil.rmtree(output_path)
     compressor = Blosc(cname="zstd", clevel=4, shuffle=2)
     encoding = {name: {"compressors": compressor, "dtype": ds[name].dtype} for name in ds.data_vars}
+
     LOGGER.info("Writing Zarr → %s", output_path)
-    ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding)
+    LOGGER.info("Dataset shape: %s", {k: v.shape for k, v in ds.data_vars.items()})
+
+    # Write zarr with explicit compute to manage memory
+    ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding, compute=True)
 
     # Check zarr size before zipping
     zarr_size = sum(f.stat().st_size for f in output_path.rglob('*') if f.is_file())
@@ -308,9 +312,21 @@ def main(argv: List[str] | None = None) -> int:
                 grib_path.unlink(missing_ok=True)
                 LOGGER.info("Processed and deleted %s", grib_path.name)
 
-            combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts")
+            LOGGER.info("Concatenating %d datasets along step dimension", len(datasets))
+            combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts", coords="minimal")
             if args.dtype:
+                LOGGER.info("Converting to dtype=%s", args.dtype)
                 combined = combined.astype(args.dtype)
+
+            # Rechunk for better compression and memory efficiency
+            LOGGER.info("Rechunking for optimal I/O")
+            combined = combined.chunk({
+                "step": 24,  # ~1 day chunks
+                "isobaricInhPa": -1,  # keep all levels together
+                "latitude": 180,
+                "longitude": 360
+            })
+
             output_path = Path(args.output)
             archive_path = save_zarr(
                 combined, output_path, zip_output=args.zip_output, max_bytes=args.max_bytes
