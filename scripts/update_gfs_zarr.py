@@ -188,8 +188,29 @@ def save_zarr(ds: xr.Dataset, output_path: Path, zip_output: bool, max_bytes: in
     LOGGER.info("Writing Zarr → %s", output_path)
     LOGGER.info("Dataset shape: %s", {k: v.shape for k, v in ds.data_vars.items()})
 
+    # Check disk space before writing
+    import subprocess
+    try:
+        result = subprocess.run(['df', '-h', str(output_path.parent)],
+                              capture_output=True, text=True, timeout=5)
+        LOGGER.info("Disk space before write:\n%s", result.stdout)
+    except Exception:
+        pass
+
     # Write zarr with explicit compute to manage memory
-    ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding, compute=True)
+    try:
+        ds.to_zarr(output_path, mode="w", consolidated=True, encoding=encoding, compute=True)
+        LOGGER.info("Zarr write completed successfully")
+    except Exception as e:
+        LOGGER.error("Zarr write failed: %s", e)
+        # Check disk space after failure
+        try:
+            result = subprocess.run(['df', '-h', str(output_path.parent)],
+                                  capture_output=True, text=True, timeout=5)
+            LOGGER.error("Disk space after failure:\n%s", result.stdout)
+        except Exception:
+            pass
+        raise
 
     # Check zarr size before zipping
     zarr_size = sum(f.stat().st_size for f in output_path.rglob('*') if f.is_file())
