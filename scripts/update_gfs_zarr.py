@@ -324,14 +324,14 @@ def main(argv: List[str] | None = None) -> int:
         LOGGER.info("Trying cycle %s %02dZ", cycle_date.isoformat(), cycle_hour)
         try:
             datasets = []
+            grib_files = []
             for fh in forecast_hours:
                 url = build_url(args.base_url, cycle_date, cycle_hour, fh, args.grid)
                 grib_path = tmp_dir / Path(url).name
                 download_file(url, grib_path)
                 datasets.append(load_pressure_dataset(grib_path, shortnames, levels))
-                # Delete GRIB immediately after loading to save disk space
-                grib_path.unlink(missing_ok=True)
-                LOGGER.info("Processed and deleted %s", grib_path.name)
+                grib_files.append(grib_path)
+                LOGGER.info("Processed %s", grib_path.name)
 
             LOGGER.info("Concatenating %d datasets along step dimension", len(datasets))
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts", coords="all", compat="override")
@@ -352,6 +352,11 @@ def main(argv: List[str] | None = None) -> int:
             archive_path = save_zarr(
                 combined, output_path, zip_output=args.zip_output, max_bytes=args.max_bytes
             )
+
+            # Now that zarr is written, delete the GRIB files
+            LOGGER.info("Cleaning up %d GRIB files", len(grib_files))
+            for grib_path in grib_files:
+                grib_path.unlink(missing_ok=True)
 
             metadata_path = output_path.parent / "latest_metadata.json"
             write_metadata(
