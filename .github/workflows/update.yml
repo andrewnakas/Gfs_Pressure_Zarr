@@ -36,10 +36,14 @@ jobs:
           echo "After cleanup:"
           df -h
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - name: Checkout repository (minimal)
+        run: |
+          # Clone only what we need, no history
+          git clone --depth 1 --single-branch --branch main https://github.com/${{ github.repository }}.git .
+          # Remove .git to save space
+          rm -rf .git
+          echo "Repository size after checkout:"
+          du -sh .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,70 +75,72 @@ jobs:
           echo "MAX_ZARR_BYTES=${MAX_ZARR_BYTES:-1500000000}" >> $GITHUB_ENV
           echo "DTYPE=${DTYPE:-float16}" >> $GITHUB_ENV
 
-      - name: Prepare data worktree
+      - name: Prepare data directory
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Create completely fresh directory for data (no git until we're ready to push)
+          rm -rf ../data-output
+          mkdir -p ../data-output
 
-          # Remove any existing data worktree to start fresh
-          rm -rf ../data-worktree
-
-          # Always create fresh orphan branch (no history)
-          mkdir -p ../data-worktree
-          cd ../data-worktree
-          git init
-          git checkout --orphan data
-
-          # Configure LFS to never download old files
-          git lfs install --skip-smudge --local
-          git config lfs.fetchexclude "*"
-
-          # Re-add LFS tracking for large artifacts
-          if [ -f ../Gfs_Pressure_Zarr/.gitattributes ]; then
-            cp ../Gfs_Pressure_Zarr/.gitattributes .
-          fi
-          git lfs track "*.zarr.zip"
-          git add .gitattributes
-
-          # Set remote
-          git remote add origin https://github.com/${{ github.repository }}.git
-
-          echo "Data worktree ready (fresh repo, no history):"
+          echo "Data directory ready:"
           df -h
+          echo "Available space:"
+          df -h / | tail -1 | awk '{print "Free: " $4}'
 
       - name: Generate Zarr archive
         run: |
           echo "=== System resources before processing ==="
           df -h
           free -h
-          python scripts/update_gfs_zarr.py --output ../data-worktree/gfs_latest.zarr --zip
+          python scripts/update_gfs_zarr.py --output ../data-output/gfs_latest.zarr --zip
 
           echo "=== Aggressive cleanup ==="
           # Clean up GRIB downloads
           rm -rf /tmp/gfs
           # Clean up unzipped zarr (only keep .zip)
-          rm -rf ../data-worktree/gfs_latest.zarr
+          rm -rf ../data-output/gfs_latest.zarr
           # Clean up Python caches
           find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
           pip cache purge || true
+          # Clean up entire source directory (we don't need it anymore)
+          cd ..
+          rm -rf Gfs_Pressure_Zarr
           # Clean up any temp files
           rm -rf ~/.cache/* || true
-          # Clean up git LFS cache (don't need old versions)
-          cd ../data-worktree
-          git lfs prune || true
-          rm -rf .git/lfs/objects/* || true
+          rm -rf /tmp/* || true
 
-          echo "=== System resources after processing ==="
+          echo "=== System resources after cleanup ==="
           df -h
           free -h
-          echo "=== Files in data worktree ==="
-          ls -lh ../data-worktree
+          echo "=== Files in data output ==="
+          ls -lh data-output/
 
       - name: Commit and push latest data
         run: |
-          cd ../data-worktree
-          git add .gitattributes gfs_latest.zarr.zip latest_metadata.json
-          git status --short
-          git commit -m "Update GFS pressure levels $(date -u +'%Y-%m-%d %H:%M UTC')" || echo "No changes to commit"
-          git push --force origin HEAD:data
+          cd ../data-output
+
+          # Initialize fresh git repo (no history)
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Create orphan branch
+          git checkout --orphan data
+
+          # Setup LFS for the zip file only
+          git lfs install --local
+          echo "*.zarr.zip filter=lfs diff=lfs merge=lfs -text" > .gitattributes
+
+          # Add only the files we need
+          git add .gitattributes
+          git add gfs_latest.zarr.zip
+          git add latest_metadata.json
+
+          # Commit
+          git commit -m "Update GFS pressure levels $(date -u +'%Y-%m-%d %H:%M UTC')"
+
+          # Push (force push to replace everything)
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git push --force origin data
+
+          echo "Successfully pushed to data branch"
