@@ -58,10 +58,9 @@ jobs:
       - name: Configure capture window
         run: |
           FH=$(python - <<'PY'
-          # 209 forecast hours: 1-hourly to 120h, then 3-hourly to 384h
-          early = list(range(0, 121, 1))
-          late = list(range(123, 385, 3))
-          print(' '.join(str(x) for x in early + late))
+          # 3-hourly to 384h (16 days) = 129 forecast hours
+          # Reduced from 209 to save disk space during processing
+          print(' '.join(str(x) for x in range(0, 385, 3)))
           PY
           )
           echo "FORECAST_HOURS=${FORECAST_HOURS:-$FH}" >> $GITHUB_ENV

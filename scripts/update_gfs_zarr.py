@@ -325,13 +325,24 @@ def main(argv: List[str] | None = None) -> int:
         try:
             datasets = []
             grib_files = []
-            for fh in forecast_hours:
+            for i, fh in enumerate(forecast_hours):
                 url = build_url(args.base_url, cycle_date, cycle_hour, fh, args.grid)
                 grib_path = tmp_dir / Path(url).name
                 download_file(url, grib_path)
                 datasets.append(load_pressure_dataset(grib_path, shortnames, levels))
                 grib_files.append(grib_path)
-                LOGGER.info("Processed %s", grib_path.name)
+
+                # Log progress every 20 files
+                if (i + 1) % 20 == 0:
+                    LOGGER.info("Processed %d/%d files", i + 1, len(forecast_hours))
+                    # Check disk space periodically
+                    import subprocess
+                    try:
+                        result = subprocess.run(['df', '-h', str(tmp_dir)],
+                                              capture_output=True, text=True, timeout=5)
+                        LOGGER.info("Disk space:\n%s", result.stdout)
+                    except Exception:
+                        pass
 
             LOGGER.info("Concatenating %d datasets along step dimension", len(datasets))
             combined = xr.concat(datasets, dim="step", combine_attrs="drop_conflicts", coords="all", compat="override")
